@@ -13,3 +13,8 @@
 - [x] Unit tests for backend form submission
 - [x] Update interactive demo to display the entered phone number in the simulation mockup
 - [x] Handle notifyOwner failure gracefully in leads.submit (log warning, don't block submission)
+- [x] Create leads table in Supabase (Postgres)
+- [ ] Build Vercel serverless API route for contact form submission (/api/leads)
+- [ ] Configure DATABASE_URL env var on Vercel
+- [ ] Push to GitHub and verify auto-deploy works end-to-end
+- [ ] Update vercel.json to route /api/* to serverless functions

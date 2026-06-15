@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
-import { trpc } from "@/lib/trpc";
+
 import {
   Phone,
   MessageSquare,
@@ -507,17 +507,9 @@ function ContactSection() {
   });
   const [submitted, setSubmitted] = useState(false);
 
-  const submitLead = trpc.leads.submit.useMutation({
-    onSuccess: () => {
-      setSubmitted(true);
-      toast.success("We'll be in touch within 24 hours!");
-    },
-    onError: () => {
-      toast.error("Something went wrong. Please try again.");
-    },
-  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (
       !formData.businessName ||
@@ -528,7 +520,26 @@ function ContactSection() {
       toast.error("Please fill in all fields");
       return;
     }
-    submitLead.mutate(formData);
+
+    setIsSubmitting(true);
+    try {
+      const res = await fetch("/api/leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(formData),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSubmitted(true);
+        toast.success("We'll be in touch within 24 hours!");
+      } else {
+        toast.error(data.error || "Something went wrong. Please try again.");
+      }
+    } catch {
+      toast.error("Something went wrong. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -613,10 +624,10 @@ function ContactSection() {
                 </div>
                 <Button
                   type="submit"
-                  disabled={submitLead.isPending}
+                  disabled={isSubmitting}
                   className="w-full h-12 text-base font-semibold rounded-xl shadow-lg shadow-primary/25 active:scale-[0.97] transition-transform"
                 >
-                  {submitLead.isPending ? (
+                  {isSubmitting ? (
                     <span className="flex items-center gap-2">
                       <span className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
                       Submitting...
