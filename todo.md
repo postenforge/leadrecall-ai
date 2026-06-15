@@ -14,7 +14,16 @@
 - [x] Update interactive demo to display the entered phone number in the simulation mockup
 - [x] Handle notifyOwner failure gracefully in leads.submit (log warning, don't block submission)
 - [x] Create leads table in Supabase (Postgres)
-- [ ] Build Vercel serverless API route for contact form submission (/api/leads)
-- [ ] Configure DATABASE_URL env var on Vercel
-- [ ] Push to GitHub and verify auto-deploy works end-to-end
-- [ ] Update vercel.json to route /api/* to serverless functions
+- [x] Build Vercel serverless API route for contact form submission (/api/leads)
+- [x] Configure SUPABASE_URL and SUPABASE_SERVICE_KEY env vars on Vercel
+- [x] Verify end-to-end form submission works on live site (API returns 200, data stored in Supabase)
+- [x] Push to GitHub and verify auto-deploy works end-to-end
+- [x] Update vercel.json to route /api/* to serverless functions
+- [ ] Create conversations table in Supabase for tracking AI text-back threads
+- [ ] Build /api/voice webhook (Twilio calls this when a call comes in / is missed)
+- [ ] Build /api/sms webhook (Twilio calls this when caller replies to AI text)
+- [ ] Integrate OpenAI for generating personalized text-back messages
+- [ ] Configure Twilio env vars on Vercel (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER)
+- [ ] Configure OpenAI env var on Vercel (OPENAI_API_KEY)
+- [ ] Set Twilio webhook URLs to point to Vercel endpoints
+- [ ] Test end-to-end: missed call → AI text → reply → conversation
