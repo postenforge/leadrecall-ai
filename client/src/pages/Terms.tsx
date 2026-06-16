@@ -3,7 +3,7 @@ export default function Terms() {
     <div className="min-h-screen bg-gray-950 text-gray-200 px-6 py-12">
       <div className="max-w-3xl mx-auto">
         <h1 className="text-3xl font-bold text-white mb-2">Terms and Conditions</h1>
-        <p className="text-gray-400 mb-8">Last updated: June 15, 2026</p>
+        <p className="text-gray-400 mb-8">Last updated: June 16, 2026</p>
 
         <div className="space-y-6 text-gray-300 leading-relaxed">
           <section>
@@ -25,22 +25,52 @@ export default function Terms() {
             </p>
           </section>
 
-          <section>
-            <h2 className="text-xl font-semibold text-white mb-2">3. Consent to Receive Messages</h2>
+          <section id="sms-consent">
+            <h2 className="text-xl font-semibold text-white mb-2">3. SMS Consent &amp; Opt-In Disclosure</h2>
+            <p className="mb-3">
+              <strong className="text-white">By calling a LeadRecall AI-powered business phone number, you expressly consent to receive SMS text messages</strong> from that business via the LeadRecall AI platform. This consent is obtained as follows:
+            </p>
+            <ul className="list-disc list-inside space-y-2 mb-4">
+              <li>
+                When you call a participating business number, you will hear an automated voice greeting that clearly states: <em>"We will send you a text message to help with your inquiry."</em>
+              </li>
+              <li>
+                By remaining on the line and not disconnecting during this disclosure, you provide your express consent to receive SMS messages from the business you called.
+              </li>
+              <li>
+                If you do not wish to receive text messages, simply hang up before the greeting completes. No messages will be sent.
+              </li>
+            </ul>
+            <p className="mb-3">
+              <strong className="text-white">Message Frequency:</strong> Message frequency varies. You may receive 1-10 messages per conversation depending on your inquiry. No recurring or promotional messages are sent.
+            </p>
+            <p className="mb-3">
+              <strong className="text-white">Message and Data Rates:</strong> Message and data rates may apply. Check with your mobile carrier for details.
+            </p>
+            <p className="mb-3">
+              <strong className="text-white">Carriers Supported:</strong> Compatible with all major US carriers including AT&amp;T, T-Mobile, Verizon, and others.
+            </p>
             <p>
-              By placing a call to a LeadRecall AI-powered phone number, you consent to receive
-              text messages in response to your call. Message frequency varies based on your
-              interaction. Message and data rates may apply depending on your mobile carrier plan.
+              <strong className="text-white">Consent is not a condition of purchase.</strong> You are not required to consent to SMS messaging to receive services from the business you called.
             </p>
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold text-white mb-2">4. Opting Out</h2>
+            <h2 className="text-xl font-semibold text-white mb-2">4. Opt-Out &amp; Help</h2>
+            <p className="mb-3">
+              You may opt out of receiving messages at any time by replying <strong className="text-white">STOP</strong>{" "}
+              to any message. You will receive a single confirmation message and no
+              further messages will be sent unless you initiate contact again by calling the business number.
+            </p>
+            <p className="mb-3">
+              Reply <strong className="text-white">HELP</strong> to any message for assistance, or contact us at{" "}
+              <a href="mailto:support@leadrecallai.com" className="text-blue-400 hover:underline">
+                support@leadrecallai.com
+              </a>.
+            </p>
             <p>
-              You may opt out of receiving messages at any time by replying <strong>STOP</strong>{" "}
-              to any message. After opting out, you will receive a confirmation message and no
-              further messages will be sent unless you initiate contact again. Reply{" "}
-              <strong>HELP</strong> for assistance.
+              <strong className="text-white">Opt-out keywords:</strong> STOP, CANCEL, UNSUBSCRIBE, QUIT, END<br />
+              <strong className="text-white">Help keywords:</strong> HELP, INFO
             </p>
           </section>
 
@@ -74,10 +104,14 @@ export default function Terms() {
           <section>
             <h2 className="text-xl font-semibold text-white mb-2">8. Contact</h2>
             <p>
-              For questions about these Terms, contact us at:{" "}
+              For questions about these Terms or our SMS practices, contact us at:{" "}
               <a href="mailto:support@leadrecallai.com" className="text-blue-400 hover:underline">
                 support@leadrecallai.com
               </a>
+            </p>
+            <p className="mt-2">
+              LeadRecall AI<br />
+              Houston, TX
             </p>
           </section>
         </div>
