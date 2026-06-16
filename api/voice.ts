@@ -11,19 +11,13 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
 /**
  * Twilio Voice Webhook
  * 
- * This is called when someone calls the Twilio number.
- * We let it ring briefly, then if unanswered (or we choose not to answer),
- * we trigger the AI text-back.
+ * When someone calls the Twilio number, this webhook fires.
+ * We send an AI text-back SMS to the caller, then respond with TwiML
+ * that plays a brief message and hangs up.
  * 
- * For the MVP: We DON'T answer the call (let it go to voicemail or just ring out).
- * Instead, we immediately send an AI-powered text to the caller.
- * 
- * Flow: Call comes in → Twilio hits this webhook → We respond with TwiML 
- * that rejects/doesn't answer → Twilio hits the "status callback" when call ends
- * → We send the AI text from the status callback.
- * 
- * Actually, simpler approach: When the call comes in, we respond with a brief
- * ring then hangup, AND simultaneously fire off the text-back SMS.
+ * IMPORTANT: On Vercel serverless, ALL async work must complete BEFORE
+ * we send the HTTP response. Once res.send() is called, the function
+ * may be terminated immediately.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Twilio sends webhooks as POST with form-encoded data
@@ -37,13 +31,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   console.log(`[VOICE] Incoming call from ${callerPhone} to ${calledPhone}, status: ${callStatus}`);
 
-  // Send AI text-back to the caller (non-blocking)
-  sendTextBack(callerPhone, calledPhone).catch((err) => {
+  // Send AI text-back to the caller BEFORE responding to Twilio
+  // This ensures the SMS is sent before Vercel terminates the function
+  try {
+    await sendTextBack(callerPhone, calledPhone);
+    console.log(`[VOICE] Text-back sent successfully to ${callerPhone}`);
+  } catch (err) {
     console.error("[VOICE] Failed to send text-back:", err);
-  });
+  }
 
-  // Respond with TwiML - ring briefly then end the call
-  // This simulates a "missed call" experience
+  // NOW respond with TwiML - this tells Twilio what to say to the caller
   const twiml = new twilio.twiml.VoiceResponse();
   twiml.say(
     { voice: "alice" },
