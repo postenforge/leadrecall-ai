@@ -1,47 +1,86 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import twilio from "twilio";
+import { isValidTwilioRequest } from "./_lib/twilio";
 
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID!;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN!;
 const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER!;
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY!;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
+
+/** The business owner's real phone. When set, incoming calls ring through to
+ * it first and the text-back only fires if the call goes unanswered. When
+ * unset, every call is treated as missed (text-back immediately). */
+const FORWARD_TO_PHONE = process.env.FORWARD_TO_PHONE;
+
+/** Business identity used in the text-back. SMS senders are required to
+ * identify themselves, and callers won't recognize a bare Twilio number. */
+const BUSINESS_NAME = process.env.BUSINESS_NAME || "our team";
+
+/** How long ago a conversation can have started and still suppress a new
+ * text-back. Callers from last week deserve a fresh response. */
+const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Twilio Voice Webhook
- * 
- * When someone calls the Twilio number, this webhook fires.
- * We send an AI text-back SMS to the caller, then respond with TwiML
- * that plays a brief message and hangs up.
- * 
- * IMPORTANT: On Vercel serverless, ALL async work must complete BEFORE
- * we send the HTTP response. Once res.send() is called, the function
- * may be terminated immediately.
+ *
+ * Call flow:
+ * 1. Incoming call → if FORWARD_TO_PHONE is set, <Dial> rings the owner's
+ *    phone. Twilio then re-requests this endpoint with DialCallStatus.
+ * 2. If the dial completed, the caller talked to a human — done.
+ * 3. If unanswered/busy/failed (or no forward number configured), we send the
+ *    text-back SMS, then tell the caller to expect a text and hang up.
+ *
+ * IMPORTANT: On Vercel serverless, all async work must complete BEFORE
+ * res.send() — the function may be terminated right after responding.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Twilio sends webhooks as POST with form-encoded data
   if (req.method !== "POST") {
     return res.status(405).send("Method not allowed");
   }
+  if (!isValidTwilioRequest(req)) {
+    console.warn("[VOICE] Rejected request with invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
 
-  const callerPhone = req.body.From; // The person who called (missed caller)
-  const calledPhone = req.body.To;   // Our Twilio number
-  const callStatus = req.body.CallStatus;
+  const callerPhone = req.body.From;
+  const calledPhone = req.body.To;
+  const dialCallStatus = req.body.DialCallStatus; // present only on the <Dial> action callback
 
-  console.log(`[VOICE] Incoming call from ${callerPhone} to ${calledPhone}, status: ${callStatus}`);
+  console.log(
+    `[VOICE] From ${callerPhone} to ${calledPhone}, CallStatus=${req.body.CallStatus}, DialCallStatus=${dialCallStatus ?? "n/a"}`
+  );
 
-  // Send AI text-back to the caller BEFORE responding to Twilio
-  // This ensures the SMS is sent before Vercel terminates the function
+  const twiml = new twilio.twiml.VoiceResponse();
+
+  // Step 1: fresh incoming call with a forward number → ring the owner first.
+  if (FORWARD_TO_PHONE && !dialCallStatus) {
+    const dial = twiml.dial({
+      timeout: 20,
+      action: "/api/voice", // Twilio calls back here with DialCallStatus
+      callerId: TWILIO_PHONE_NUMBER,
+    });
+    dial.number(FORWARD_TO_PHONE);
+    res.setHeader("Content-Type", "text/xml");
+    return res.status(200).send(twiml.toString());
+  }
+
+  // Step 2: the owner answered — nothing more to do.
+  if (dialCallStatus === "completed" || dialCallStatus === "answered") {
+    twiml.hangup();
+    res.setHeader("Content-Type", "text/xml");
+    return res.status(200).send(twiml.toString());
+  }
+
+  // Step 3: genuinely missed call (no-answer/busy/failed, or no forwarding
+  // configured). Send the text-back before responding.
   try {
     await sendTextBack(callerPhone, calledPhone);
-    console.log(`[VOICE] Text-back sent successfully to ${callerPhone}`);
+    console.log(`[VOICE] Text-back sent to ${callerPhone}`);
   } catch (err) {
     console.error("[VOICE] Failed to send text-back:", err);
   }
 
-  // NOW respond with TwiML - this tells Twilio what to say to the caller
-  const twiml = new twilio.twiml.VoiceResponse();
   twiml.say(
     { voice: "alice" },
     "Sorry, we can't take your call right now. We'll text you right back!"
@@ -58,82 +97,37 @@ async function sendTextBack(callerPhone: string, businessPhone: string) {
     return;
   }
 
-  // Check if we already have an active conversation with this caller
-  const existingConvo = await getActiveConversation(callerPhone, businessPhone);
-  
+  // Skip only if we texted this caller back within the dedup window —
+  // otherwise a repeat caller weeks later would never get a response.
+  const existingConvo = await getRecentActiveConversation(callerPhone, businessPhone);
   if (existingConvo) {
-    console.log(`[TEXT-BACK] Active conversation exists for ${callerPhone}, skipping duplicate text`);
+    console.log(`[TEXT-BACK] Recent active conversation exists for ${callerPhone}, skipping duplicate text`);
     return;
   }
 
-  // Generate AI response
-  const aiMessage = await generateAIResponse(callerPhone, []);
+  // Deliberately a template, not an LLM call: it's instant, it can never say
+  // something off-script, and it matches the sample message submitted for
+  // carrier registration (10DLC / toll-free verification).
+  const message = `Hi, it's ${BUSINESS_NAME}. Sorry we missed your call! How can we help you today? Reply STOP to opt out.`;
 
-  // Send SMS via Twilio
   const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
   await client.messages.create({
-    body: aiMessage,
+    body: message,
     from: TWILIO_PHONE_NUMBER,
     to: callerPhone,
   });
 
-  console.log(`[TEXT-BACK] Sent to ${callerPhone}: "${aiMessage}"`);
+  console.log(`[TEXT-BACK] Sent to ${callerPhone}: "${message}"`);
 
-  // Save conversation to database
   await saveConversation(callerPhone, businessPhone, [
-    { role: "assistant", content: aiMessage, timestamp: new Date().toISOString() },
+    { role: "assistant", content: message, timestamp: new Date().toISOString() },
   ]);
 }
 
-async function generateAIResponse(callerPhone: string, previousMessages: Array<{ role: string; content: string }>) {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `You are a friendly, professional assistant for a local home service business. Someone just tried to call and couldn't get through. Your job is to:
-1. Apologize briefly for missing their call
-2. Ask how you can help them today
-3. Keep it under 160 characters (1 SMS)
-4. Be warm and conversational, not robotic
-5. Don't use emojis excessively (1 max)
-6. Don't mention you're an AI
-
-Example: "Hey! Sorry we missed your call. How can we help you today? We can get you scheduled ASAP."`,
-        },
-        ...previousMessages.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        })),
-        ...(previousMessages.length === 0
-          ? [{ role: "user" as const, content: "Generate the initial text-back message for a missed call." }]
-          : []),
-      ],
-      max_tokens: 100,
-      temperature: 0.7,
-    }),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    console.error("[OPENAI] Error:", err);
-    // Fallback message if AI fails
-    return "Hey! Sorry we missed your call. How can we help you today?";
-  }
-
-  const data = await response.json();
-  return data.choices[0]?.message?.content?.trim() || "Hey! Sorry we missed your call. How can we help you today?";
-}
-
-async function getActiveConversation(callerPhone: string, businessPhone: string) {
+async function getRecentActiveConversation(callerPhone: string, businessPhone: string) {
+  const since = new Date(Date.now() - DEDUP_WINDOW_MS).toISOString();
   const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/conversations?caller_phone=eq.${encodeURIComponent(callerPhone)}&business_phone=eq.${encodeURIComponent(businessPhone)}&status=eq.active&order=created_at.desc&limit=1`,
+    `${SUPABASE_URL}/rest/v1/conversations?caller_phone=eq.${encodeURIComponent(callerPhone)}&business_phone=eq.${encodeURIComponent(businessPhone)}&status=eq.active&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc&limit=1`,
     {
       headers: {
         apikey: SUPABASE_SERVICE_KEY,

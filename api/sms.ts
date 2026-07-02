@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import twilio from "twilio";
+import { isHelpKeyword, isOptOutKeyword, isValidTwilioRequest } from "./_lib/twilio";
 
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID!;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN!;
@@ -7,77 +8,102 @@ const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER!;
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY!;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
+const BUSINESS_NAME = process.env.BUSINESS_NAME || "the business";
+
+/** Only the most recent messages go to the model — threads never expire in
+ * the DB, so without a cap an old thread grows unbounded. */
+const MAX_HISTORY_MESSAGES = 20;
 
 /**
  * Twilio SMS Webhook
- * 
- * Called when someone replies to our AI text-back.
- * We continue the conversation using AI to qualify the lead
- * and offer to book an appointment.
+ *
+ * Called when someone replies to our text-back. Continues the conversation
+ * using AI to qualify the lead and offer to book an appointment.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
     return res.status(405).send("Method not allowed");
   }
+  if (!isValidTwilioRequest(req)) {
+    console.warn("[SMS] Rejected request with invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
 
-  const callerPhone = req.body.From; // The person replying
-  const businessPhone = req.body.To; // Our Twilio number
-  const incomingMessage = req.body.Body; // Their message text
+  const callerPhone = req.body.From;
+  const businessPhone = req.body.To;
+  const incomingMessage = req.body.Body ?? "";
 
   console.log(`[SMS] Incoming from ${callerPhone}: "${incomingMessage}"`);
 
-  // Get or create conversation
-  let conversation = await getActiveConversation(callerPhone, businessPhone);
-  
-  let messages: Array<{ role: string; content: string; timestamp: string }> = [];
+  const emptyTwiml = new twilio.twiml.MessagingResponse().toString();
 
-  if (conversation) {
-    messages = typeof conversation.messages === "string" 
-      ? JSON.parse(conversation.messages) 
-      : conversation.messages || [];
+  try {
+    // Carrier keywords: Twilio enforces the actual opt-out and auto-replies.
+    // We must not run AI on these or try to message an opted-out number.
+    if (isOptOutKeyword(incomingMessage)) {
+      const conversation = await getActiveConversation(callerPhone, businessPhone);
+      if (conversation) {
+        await closeConversation(conversation.id);
+      }
+      console.log(`[SMS] ${callerPhone} opted out; conversation closed`);
+      res.setHeader("Content-Type", "text/xml");
+      return res.status(200).send(emptyTwiml);
+    }
+    if (isHelpKeyword(incomingMessage)) {
+      res.setHeader("Content-Type", "text/xml");
+      return res.status(200).send(emptyTwiml);
+    }
+
+    // Get or create conversation
+    const conversation = await getActiveConversation(callerPhone, businessPhone);
+
+    let messages: Array<{ role: string; content: string; timestamp: string }> = [];
+    if (conversation) {
+      messages =
+        typeof conversation.messages === "string"
+          ? JSON.parse(conversation.messages)
+          : conversation.messages || [];
+    }
+
+    messages.push({
+      role: "user",
+      content: incomingMessage,
+      timestamp: new Date().toISOString(),
+    });
+
+    const aiReply = await generateConversationReply(messages.slice(-MAX_HISTORY_MESSAGES));
+
+    messages.push({
+      role: "assistant",
+      content: aiReply,
+      timestamp: new Date().toISOString(),
+    });
+
+    if (conversation) {
+      await updateConversation(conversation.id, messages);
+    } else {
+      await createConversation(callerPhone, businessPhone, messages);
+    }
+
+    const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+    await client.messages.create({
+      body: aiReply,
+      from: TWILIO_PHONE_NUMBER,
+      to: callerPhone,
+    });
+
+    console.log(`[SMS] Replied to ${callerPhone}: "${aiReply}"`);
+
+    // Notify the business owner about the lead conversation
+    await notifyOwnerOfLead(callerPhone, incomingMessage, aiReply, messages);
+  } catch (err) {
+    // Always answer Twilio with 200 — a 5xx makes Twilio retry the webhook,
+    // which would re-run the AI and double-text the customer.
+    console.error("[SMS] Handler error:", err);
   }
 
-  // Add the incoming message to history
-  messages.push({
-    role: "user",
-    content: incomingMessage,
-    timestamp: new Date().toISOString(),
-  });
-
-  // Generate AI response based on conversation history
-  const aiReply = await generateConversationReply(messages);
-
-  // Add AI response to history
-  messages.push({
-    role: "assistant",
-    content: aiReply,
-    timestamp: new Date().toISOString(),
-  });
-
-  // Update or create conversation in database
-  if (conversation) {
-    await updateConversation(conversation.id, messages);
-  } else {
-    await createConversation(callerPhone, businessPhone, messages);
-  }
-
-  // Send the AI reply via Twilio
-  const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
-  await client.messages.create({
-    body: aiReply,
-    from: TWILIO_PHONE_NUMBER,
-    to: callerPhone,
-  });
-
-  console.log(`[SMS] Replied to ${callerPhone}: "${aiReply}"`);
-
-  // Notify the business owner about the lead conversation
-  await notifyOwnerOfLead(callerPhone, incomingMessage, aiReply, messages);
-
-  // Respond with empty TwiML (we already sent the message via API)
-  const twiml = new twilio.twiml.MessagingResponse();
   res.setHeader("Content-Type", "text/xml");
-  return res.status(200).send(twiml.toString());
+  return res.status(200).send(emptyTwiml);
 }
 
 async function generateConversationReply(
@@ -94,7 +120,7 @@ async function generateConversationReply(
       messages: [
         {
           role: "system",
-          content: `You are a friendly, professional assistant for a local home service business (plumber, electrician, HVAC, etc). You're having a text conversation with a potential customer who tried to call but couldn't get through.
+          content: `You are a friendly, professional assistant texting on behalf of ${BUSINESS_NAME}, a local home service business. You're having a text conversation with a potential customer who tried to call but couldn't get through.
 
 Your goals:
 1. Understand what service they need
@@ -183,20 +209,34 @@ async function updateConversation(
   });
 }
 
+async function closeConversation(id: number) {
+  await fetch(`${SUPABASE_URL}/rest/v1/conversations?id=eq.${id}`, {
+    method: "PATCH",
+    headers: {
+      apikey: SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      status: "closed",
+      updated_at: new Date().toISOString(),
+    }),
+  });
+}
+
 async function notifyOwnerOfLead(
   callerPhone: string,
   customerMessage: string,
   aiReply: string,
   fullHistory: Array<{ role: string; content: string; timestamp?: string }>
 ) {
-  // For now, log it. In production, this would send an email/SMS to the business owner.
   const OWNER_PHONE = process.env.OWNER_NOTIFICATION_PHONE;
-  
+
   if (OWNER_PHONE) {
     try {
       const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
       const summary = `New lead activity!\nFrom: ${callerPhone}\nThey said: "${customerMessage}"\nAI replied: "${aiReply}"\nTotal messages: ${fullHistory.length}`;
-      
+
       await client.messages.create({
         body: summary.substring(0, 1600), // SMS limit
         from: TWILIO_PHONE_NUMBER,
